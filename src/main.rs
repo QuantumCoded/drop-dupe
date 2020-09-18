@@ -4,19 +4,38 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-fn split_video(path: &Path, downscale: f32) {
-    println!("split_video");
+fn make_cache() {
+    let cache_path = Path::new("cache");
 
+    if cache_path.exists() {
+        fs::remove_dir_all(cache_path).expect("failed to clear cache directory");
+    }
+
+    fs::create_dir(cache_path).expect("failed to create cache directory");
+    fs::create_dir(&cache_path.join("hi_res")).expect("failed to create hi_res directory");
+    fs::create_dir(&cache_path.join("lo_res")).expect("failed to create lo_res directory");
+}
+
+fn split_video(path: &Path, downscale: f32) {
     let path_str = path
         .to_str()
         .expect("failed to convert path to str when splitting video");
 
+    println!("splitting high res");
+    Command::new("ffmpeg.exe")
+        .arg("-i")
+        .arg(path_str)
+        .arg("cache/hi_res/%08d.png")
+        .output()
+        .expect("failed to split video");
+
+    println!("splitting low res");
     Command::new("ffmpeg.exe")
         .arg("-i")
         .arg(path_str)
         .arg("-vf")
         .arg(format!("scale=iw*{ds:.2}:ih*{ds:.2}", ds = downscale))
-        .arg("temp/%08d.png")
+        .arg("cache/lo_res/%08d.png")
         .output()
         .expect("failed to split video");
 }
@@ -40,10 +59,16 @@ fn open_to_dssim(dis: &dssim_core::Dssim, path: &Path) -> dssim_core::DssimImage
         .expect("failed to create image with dssim")
 }
 
-fn image_seq_to_dssim_vec(dis: &dssim_core::Dssim) -> Vec<dssim_core::DssimImage<f32>> {
+fn image_seq_to_dssim_vec(dis: &dssim_core::Dssim, dir: &Path) -> Vec<dssim_core::DssimImage<f32>> {
     let mut dssim_frames: Vec<dssim_core::DssimImage<f32>> = vec![];
-    let results_vec: Vec<Result<std::fs::DirEntry, std::io::Error>> = fs::read_dir("temp")
-        .expect("failed to read temp dir")
+    let results_vec: Vec<Result<std::fs::DirEntry, std::io::Error>> = fs::read_dir(dir)
+        .expect(&format!(
+            "failed to read {} dir",
+            &dir.file_name()
+                .expect("failed to get directory name")
+                .to_str()
+                .expect("failed to convert directory name to str")
+        ))
         .collect();
     let results_vec_len = results_vec.len();
 
@@ -62,9 +87,9 @@ fn image_seq_to_dssim_vec(dis: &dssim_core::Dssim) -> Vec<dssim_core::DssimImage
     dssim_frames
 }
 
-fn find_duplicate_frames(threshold: f64) -> Vec<u32> {
+fn remove_duplicate_frames(threshold: f64) {
     let dis = dssim_core::new();
-    let dssim_frames = image_seq_to_dssim_vec(&dis);
+    let dssim_frames = &image_seq_to_dssim_vec(&dis, Path::new("cache/lo_res"));
     let mut dupes = std::collections::HashSet::new();
     let dssim_frames_len = dssim_frames.len();
 
@@ -73,12 +98,7 @@ fn find_duplicate_frames(threshold: f64) -> Vec<u32> {
             continue;
         }
 
-        println!(
-            "compare {} of {} ({:.2}%)",
-            i + 1,
-            dssim_frames_len,
-            (i + 1) as f32 / dssim_frames_len as f32 * 100 as f32
-        );
+        let prog = (i + 1) as f32 / dssim_frames_len as f32 * 100 as f32;
 
         for j in i + 1..dssim_frames.len() {
             if dupes.contains(&j) {
@@ -86,54 +106,45 @@ fn find_duplicate_frames(threshold: f64) -> Vec<u32> {
             }
 
             let dis_comp = dis.compare(&dssim_frames[i], &dssim_frames[j]).0;
-            let is_dupe = dis_comp < threshold; // i changed this to <= as we want dssim UNDER a threshold
+            let is_dupe = dis_comp < threshold; // i changed this to < as we want dssim UNDER a threshold
 
             println!(
-                "{} < {} = {} [{}] [{}]",
+                "{} < {} = {} [{}] [{}] ({:.2}%)",
                 dis_comp,
                 threshold,
                 is_dupe,
                 i + 1,
-                j + 1
+                j + 1,
+                prog
             );
 
             if is_dupe {
                 dupes.insert(j);
+                fs::remove_file(Path::new(&format!(
+                    "cache/hi_res/{index:>0width$}.png",
+                    index = j + 1,
+                    width = 8
+                )))
+                .expect("filed to remove duplicate image");
             }
         }
-    }
-
-    dssim_frames
-        .into_iter()
-        .enumerate()
-        .filter(|(idx, _)| dupes.contains(idx))
-        .map(|(idx, _)| idx as u32)
-        .collect()
-}
-
-fn remove_duplicate_frames(threshold: f64) {
-    println!("remove_duplicate_frames");
-
-    let dupes = find_duplicate_frames(threshold);
-
-    for idx in dupes {
-        let file_name = format!("temp/{index:>0width$}.png", index = idx + 1, width = 8);
-        let image = Path::new(&file_name);
-
-        fs::remove_file(image).expect("failed to remove duplicate image");
     }
 }
 
 fn renumber_image_seq() {
     println!("renumber_image_seq");
 
-    let results = fs::read_dir("temp").expect("failed to read temp directory when renumbering");
+    let results = fs::read_dir("cache/hi_res").expect("failed to read directory when renumbering");
 
     for result in results.enumerate() {
         if let Ok(dir_entry) = result.1 {
             fs::rename(
                 Path::new(&dir_entry.path()),
-                format!("temp/{index:>0width$}.png", index = result.0 + 1, width = 8),
+                format!(
+                    "cache/hi_res/{index:>0width$}.png",
+                    index = result.0 + 1,
+                    width = 8
+                ),
             )
             .expect("failed to rename file when renumbering");
         }
@@ -149,7 +160,7 @@ fn merge_image_seq(path: &Path) {
 
     Command::new("ffmpeg.exe")
         .arg("-i")
-        .arg("temp/%08d.png")
+        .arg("cache/hi_res/%08d.png")
         .arg("-y")
         .arg(path_str)
         .output()
@@ -159,16 +170,10 @@ fn merge_image_seq(path: &Path) {
 fn main() {
     let video_name = env::args().nth(1).expect("expected video file");
     let video_path = Path::new(&video_name);
-    let threshold = 0.01;
-    let downscale = 0.15;
+    let threshold = 0.005;
+    let downscale = 0.25;
 
-    // Remove the temp directory and its contents if it exists to prevent weird stuff
-    if Path::new("temp").exists() {
-        fs::remove_dir_all("temp").expect("failed to remove temp directory");
-    }
-
-    fs::create_dir(Path::new("temp")).expect("failed to create temp directory");
-
+    make_cache();
     split_video(&video_path, downscale);
     remove_duplicate_frames(threshold);
     renumber_image_seq();
