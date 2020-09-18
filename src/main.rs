@@ -88,6 +88,8 @@ fn image_seq_to_dssim_vec(dis: &dssim_core::Dssim, dir: &Path) -> Vec<dssim_core
 }
 
 fn remove_duplicate_frames(threshold: f64) {
+    println!("remove_duplicate_frames");
+
     let dis = dssim_core::new();
     let dssim_frames = &image_seq_to_dssim_vec(&dis, Path::new("cache/lo_res"));
     let mut dupes = std::collections::HashSet::new();
@@ -108,17 +110,17 @@ fn remove_duplicate_frames(threshold: f64) {
             let dis_comp = dis.compare(&dssim_frames[i], &dssim_frames[j]).0;
             let is_dupe = dis_comp < threshold; // i changed this to < as we want dssim UNDER a threshold
 
-            println!(
-                "{} < {} = {} [{}] [{}] ({:.2}%)",
-                dis_comp,
-                threshold,
-                is_dupe,
-                i + 1,
-                j + 1,
-                prog
-            );
-
             if is_dupe {
+                println!(
+                    "found duplicate!\r\n{} < {} [{}] [{}] ({:.2}%) <{}>",
+                    dis_comp,
+                    threshold,
+                    i + 1,
+                    j + 1,
+                    prog,
+                    j-i
+                );
+
                 dupes.insert(j);
                 fs::remove_file(Path::new(&format!(
                     "cache/hi_res/{index:>0width$}.png",
@@ -170,8 +172,8 @@ fn merge_image_seq(path: &Path) {
 fn main() {
     let video_name = env::args().nth(1).expect("expected video file");
     let video_path = Path::new(&video_name);
-    let threshold = 0.005;
-    let downscale = 0.25;
+    let threshold = 0.0015;
+    let downscale = 0.1;
 
     make_cache();
     split_video(&video_path, downscale);
