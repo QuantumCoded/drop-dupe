@@ -1,0 +1,13 @@
+[package]
+name = "drop-dupe"
+version = "0.1.0"
+authors = ["QuantumCoded <bfields32@student.cccs.edu>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+image = "0.23.9"
+dssim-core = "2.11.3"
+imgref = "1.7.0"
+rgb = "0.8.25"
