@@ -1,8 +1,11 @@
+extern crate clap;
+
+use clap::{App, Arg};
 use imgref::ImgRef;
-use std::env;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::str::from_utf8;
 
 fn make_cache() {
     let cache_path = Path::new("cache");
@@ -16,30 +19,55 @@ fn make_cache() {
     fs::create_dir(&cache_path.join("lo_res")).expect("failed to create lo_res directory");
 }
 
-fn split_video(path: &Path, downscale: f32) {
+fn split_video(path: &Path, downscale: f32, verbosity: u64) {
     let path_str = path
         .to_str()
         .expect("failed to convert path to str when splitting video");
 
-    println!("splitting high res");
-    Command::new("ffmpeg.exe")
+    match verbosity {
+        0 => {}
+        1 | _ => println!("splitting high res"),
+    }
+
+    let hi_res_out = Command::new("ffmpeg.exe")
         .arg("-i")
         .arg(path_str)
         .arg("cache/hi_res/%08d.png")
         .output()
-        .expect("failed to split video");
+        .expect("failed to execute ffmpeg");
 
-    println!("splitting low res");
-    Command::new("ffmpeg.exe")
+    match verbosity {
+        0 => {}
+        1 | _ => {
+            // let stdout = from_utf8(&hi_res_out.stdout).unwrap();
+            let stderr = from_utf8(&hi_res_out.stderr).unwrap();
+
+            println!("{}", stderr);
+            println!("splitting low res");
+        }
+    }
+
+    let lo_res_out = Command::new("ffmpeg.exe")
         .arg("-i")
         .arg(path_str)
         .arg("-vf")
         .arg(format!("scale=iw*{ds:.2}:ih*{ds:.2}", ds = downscale))
         .arg("cache/lo_res/%08d.png")
         .output()
-        .expect("failed to split video");
+        .expect("failed to execute ffmpeg");
+
+    match verbosity {
+        0 => {}
+        1 | _ => {
+            // let stdout = from_utf8(&lo_res_out.stdout).unwrap();
+            let stderr = from_utf8(&lo_res_out.stderr).unwrap();
+
+            println!("{}", stderr);
+        }
+    }
 }
 
+// todo: add option for alpha
 fn open_to_dssim(dis: &dssim_core::Dssim, path: &Path) -> dssim_core::DssimImage<f32> {
     let img_rgb = image::open(path)
         .expect("failed to open image when trying to convert to dssim")
@@ -59,7 +87,11 @@ fn open_to_dssim(dis: &dssim_core::Dssim, path: &Path) -> dssim_core::DssimImage
         .expect("failed to create image with dssim")
 }
 
-fn image_seq_to_dssim_vec(dis: &dssim_core::Dssim, dir: &Path) -> Vec<dssim_core::DssimImage<f32>> {
+fn image_seq_to_dssim_vec(
+    dis: &dssim_core::Dssim,
+    dir: &Path,
+    verbosity: u64,
+) -> Vec<dssim_core::DssimImage<f32>> {
     let mut dssim_frames: Vec<dssim_core::DssimImage<f32>> = vec![];
     let results_vec: Vec<Result<std::fs::DirEntry, std::io::Error>> = fs::read_dir(dir)
         .expect(&format!(
@@ -74,12 +106,16 @@ fn image_seq_to_dssim_vec(dis: &dssim_core::Dssim, dir: &Path) -> Vec<dssim_core
 
     for result in results_vec.iter().enumerate() {
         if let Ok(dir_entry) = result.1 {
-            println!(
-                "opening frame {} of {} to dssim image ({:.2}%)",
-                result.0 + 1,
-                results_vec_len,
-                (result.0 + 1) as f32 / results_vec_len as f32 * 100 as f32
-            );
+            match verbosity {
+                0 => {}
+                1 | _ => println!(
+                    "opening frame {} of {} to dssim image ({:.2}%)",
+                    result.0 + 1,
+                    results_vec_len,
+                    (result.0 + 1) as f32 / results_vec_len as f32 * 100 as f32
+                ),
+            }
+
             dssim_frames.push(open_to_dssim(dis, &dir_entry.path()));
         }
     }
@@ -87,11 +123,14 @@ fn image_seq_to_dssim_vec(dis: &dssim_core::Dssim, dir: &Path) -> Vec<dssim_core
     dssim_frames
 }
 
-fn remove_duplicate_frames(threshold: f64) {
-    println!("remove_duplicate_frames");
+fn remove_duplicate_frames(threshold: f64, verbosity: u64) {
+    match verbosity {
+        0 => {}
+        1 | _ => println!("remove_duplicate_frames"),
+    }
 
     let dis = dssim_core::new();
-    let dssim_frames = &image_seq_to_dssim_vec(&dis, Path::new("cache/lo_res"));
+    let dssim_frames = &image_seq_to_dssim_vec(&dis, Path::new("cache/lo_res"), verbosity);
     let mut dupes = std::collections::HashSet::new();
     let dssim_frames_len = dssim_frames.len();
 
@@ -111,17 +150,21 @@ fn remove_duplicate_frames(threshold: f64) {
             let is_dupe = dis_comp < threshold; // i changed this to < as we want dssim UNDER a threshold
 
             if is_dupe {
-                println!(
-                    "found duplicate!\r\n{} < {} [{}] [{}] ({:.2}%) <{}>",
-                    dis_comp,
-                    threshold,
-                    i + 1,
-                    j + 1,
-                    prog,
-                    j-i
-                );
+                match verbosity {
+                    0 => {}
+                    1 | _ => println!(
+                        "found duplicate!\r\n{} < {} [{}] [{}] ({:.2}%) <{}>",
+                        dis_comp,
+                        threshold,
+                        i + 1,
+                        j + 1,
+                        prog,
+                        j - i
+                    ),
+                }
 
                 dupes.insert(j);
+
                 fs::remove_file(Path::new(&format!(
                     "cache/hi_res/{index:>0width$}.png",
                     index = j + 1,
@@ -133,8 +176,11 @@ fn remove_duplicate_frames(threshold: f64) {
     }
 }
 
-fn renumber_image_seq() {
-    println!("renumber_image_seq");
+fn renumber_image_seq(verbosity: u64) {
+    match verbosity {
+        0 => {}
+        1 | _ => println!("renumber_image_seq"),
+    }
 
     let results = fs::read_dir("cache/hi_res").expect("failed to read directory when renumbering");
 
@@ -153,8 +199,11 @@ fn renumber_image_seq() {
     }
 }
 
-fn merge_image_seq(path: &Path) {
-    println!("merge_image_seq");
+fn merge_image_seq(path: &Path, verbosity: u64) {
+    match verbosity {
+        0 => {}
+        1 | _ => println!("merge_image_seq"),
+    }
 
     let path_str = path
         .to_str()
@@ -170,14 +219,62 @@ fn merge_image_seq(path: &Path) {
 }
 
 fn main() {
-    let video_name = env::args().nth(1).expect("expected video file");
+    let matches = App::new("Drop Dupe")
+        .version("1.0")
+        .author("QuantumCoded <bfields32@student.cccs.edu>")
+        .about("A tool for detecting and removing duplicate frames from different kinds of video")
+        .arg(
+            Arg::with_name("threshold")
+                .short("t")
+                .long("threshold")
+                .value_name("THRESHOLD")
+                .help("The dissimilarity threshold (smaller forces more similar duplicates)"),
+        )
+        .arg(
+            Arg::with_name("downscale")
+                .short("s")
+                .long("scale")
+                .value_name("DOWNSCALE")
+                .help("The amount to scale the video by before checking (smaller = faster)"),
+        )
+        .arg(
+            Arg::with_name("verbose")
+                .short("v")
+                .multiple(true)
+                .help("Sets verbosity level"),
+        )
+        .arg(
+            Arg::with_name("INPUT")
+                .help("Path to a video file")
+                .required(true)
+                .index(1),
+        )
+        .get_matches();
+
+    let video_name = matches.value_of("INPUT").unwrap();
     let video_path = Path::new(&video_name);
-    let threshold = 0.0015;
-    let downscale = 0.1;
+    let threshold = matches
+        .value_of("threshold")
+        .unwrap_or("0.0025")
+        .parse::<f64>()
+        .unwrap();
+    let downscale = matches
+        .value_of("downscale")
+        .unwrap_or("0.125")
+        .parse::<f32>()
+        .unwrap();
+    let verbosity = matches.occurrences_of("verbose");
+
+    println!(
+        "running with threshold={}, downscale={}, verbosity={}",
+        threshold, downscale, verbosity
+    );
 
     make_cache();
-    split_video(&video_path, downscale);
-    remove_duplicate_frames(threshold);
-    renumber_image_seq();
-    merge_image_seq(Path::new("out.mp4"));
+    split_video(&video_path, downscale, verbosity);
+    remove_duplicate_frames(threshold, verbosity);
+    renumber_image_seq(verbosity);
+    merge_image_seq(Path::new("out.mp4"), verbosity);
+
+    println!("finished");
 }
